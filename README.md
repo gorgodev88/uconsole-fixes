@@ -7,7 +7,7 @@ Each fix lives in its own directory under `fixes/`, with a standalone README cov
 | Fix | Problem it solves |
 |---|---|
 | [`fixes/speaker-static/`](fixes/speaker-static/) | Built-in speakers emit static/buzzing during keyboard presses and CPU activity when no audio is playing |
-| [`fixes/trackball-firmware/`](fixes/trackball-firmware/) | Stock trackball firmware makes the cursor slow and imprecise; updated keyboard firmware fixes tracking |
+| [`fixes/trackball-firmware/`](fixes/trackball-firmware/) | Older stock keyboard firmware has no trackball scrolling; updating it adds Select+trackball scroll-wheel mode |
 
 ## Hardware tested
 
