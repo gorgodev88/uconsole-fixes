@@ -2,7 +2,7 @@
 
 A collection of tested fixes for the [ClockworkPi uConsole](https://www.clockworkpi.com/uconsole) — a portable ARM computer (CM4/CM5) with a built-in keyboard, trackball, DSI display, and speakers.
 
-Each fix lives in its own directory under `fixes/`, with a standalone README covering the problem, root cause, step-by-step instructions, and how to revert.
+Each fix lives in its own directory under `fixes/`, with a standalone README covering the problem, root cause, step-by-step instructions, and what your options are if you want to go back.
 
 | Fix | Problem it solves |
 |---|---|
@@ -17,3 +17,7 @@ Each fix lives in its own directory under `fixes/`, with a standalone README cov
 ## Contributing
 
 These are personal notes made public in the hope they're useful. Issues and PRs with additional uConsole fixes or corrections are welcome.
+
+## License
+
+[MIT](LICENSE)

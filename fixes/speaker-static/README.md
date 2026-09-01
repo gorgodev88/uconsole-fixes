@@ -33,7 +33,7 @@ while True:
         enable_speaker_gpio()       # <-- amp ON whenever no headphones
     elif tmp == "10: ip    pn | hi // GPIO10 = input":
         disable_speaker_gpio()
-    
+
     time.sleep(1)
 ```
 
@@ -43,24 +43,42 @@ There is no check for whether audio is actually playing. The amplifier stays on 
 
 ## The Fix
 
-Add a check against the kernel's ALSA PCM status file:
+Add a check against the kernel's ALSA PCM status files:
 
 ```
-/proc/asound/card0/pcm0p/sub0/status
+/proc/asound/card*/pcm*p/sub*/status
 ```
 
-This file is maintained by the kernel and reports `state: RUNNING` only when audio is actively being played back through the speaker output. It requires no PulseAudio or PipeWire connection and is accessible from a system service running as root.
+These files are maintained by the kernel and report `state: RUNNING` only while audio is actively being played back. They require no PulseAudio or PipeWire connection and are readable by a system service running as root.
 
 **New logic:**
 - If headphones are plugged in → amp OFF
 - If no headphones AND audio is playing → amp ON
 - If no headphones AND audio is silent/stopped → amp OFF
+- If the headphone-jack GPIO can't be read reliably → amp OFF (fail safe)
 
-This means the amp is only powered when it is actually needed, eliminating the EMI pickup during silence.
+The amp is only powered when it is actually needed, eliminating the EMI pickup during silence. The replacement script checks *every* playback substream on *every* sound card, so it keeps working even if the analog output is not card 0 (for example when a USB audio device grabs a lower card number at boot).
+
+### Trade-offs (read before applying)
+
+- **Sound onset is clipped.** The amp powers up on the first poll *after* playback starts, so up to ~0.5 s of the beginning of a sound plays into a disabled amp. Very short notification beeps can be inaudible entirely. If you rely on system notification sounds, this fix may not be for you.
+- **The amp turns off a few seconds after audio ends, not instantly.** Under PipeWire/WirePlumber the PCM stays in `RUNNING` for the node suspend timeout (~5 s by default) after playback stops, so expect roughly that much delay before the amp drops. If you've set WirePlumber's `session.suspend-timeout-seconds = 0` (a common anti-pop tweak), the PCM never leaves `RUNNING` and **this fix will do nothing** — the amp will stay on, as stock.
+- **HDMI corner case:** because the script treats playback on *any* card as "audio playing," playing audio over HDMI also powers the speaker amp. During HDMI playback you get stock behavior (amp on, possible idle static from the speakers).
 
 ---
 
 ## Step-by-Step Instructions
+
+### Step 0 — Check the prerequisites
+
+This fix replaces a file installed by the stock `clockworkpi-audio` package. Confirm it's present:
+
+```bash
+systemctl cat clockworkpi-audio-patch.service   # should print the unit
+ls /usr/local/bin/audio_3.5_patch.py            # should exist
+```
+
+If either is missing, your image doesn't use this mechanism and this fix doesn't apply as written.
 
 ### Step 1 — Back up the original script
 
@@ -70,55 +88,13 @@ sudo cp /usr/local/bin/audio_3.5_patch.py /usr/local/bin/audio_3.5_patch.py.bak
 
 ### Step 2 — Replace the script
 
-```bash
-sudo nano /usr/local/bin/audio_3.5_patch.py
-```
-
-Delete the existing contents and paste in the fixed script below (see **Fixed Script** section), then save with `Ctrl+O`, `Enter`, `Ctrl+X`.
-
-Or use this one-liner to write it directly:
+If you cloned this repo:
 
 ```bash
-sudo tee /usr/local/bin/audio_3.5_patch.py > /dev/null << 'EOF'
-import os
-import time
-
-ALSA_STATUS = "/proc/asound/card0/pcm0p/sub0/status"
-
-def init_gpio():
-    os.popen("pinctrl set 11 op")
-    os.popen("pinctrl set 10 ip pn")
-
-def check_3_5():
-    tmp = os.popen("pinctrl 10").readline().strip("\n")
-    return tmp
-
-def is_audio_playing():
-    try:
-        with open(ALSA_STATUS) as f:
-            return "state: RUNNING" in f.read()
-    except OSError:
-        return False
-
-def enable_speaker_gpio():
-    os.popen("pinctrl set 11 op dh")
-
-def disable_speaker_gpio():
-    os.popen("pinctrl set 11 op dl")
-
-init_gpio()
-
-while True:
-    headphones_in = check_3_5() == "10: ip    pn | hi // GPIO10 = input"
-
-    if headphones_in or not is_audio_playing():
-        disable_speaker_gpio()
-    else:
-        enable_speaker_gpio()
-
-    time.sleep(0.5)
-EOF
+sudo install -m 0644 audio_3.5_patch.py /usr/local/bin/audio_3.5_patch.py
 ```
+
+Otherwise copy the script from the [Fixed Script](#fixed-script) section below into `/usr/local/bin/audio_3.5_patch.py` (e.g. with `sudo nano`).
 
 ### Step 3 — Restart the service
 
@@ -137,54 +113,85 @@ Expected output should show `Active: active (running)`.
 ### Step 5 — Test
 
 - **Idle / typing:** No static from speakers.
-- **Play audio:** Speakers activate within ~0.5 seconds.
-- **Audio stops:** Speakers go silent within ~0.5 seconds.
+- **Play audio:** Speakers activate within ~0.5 seconds (the first instant of sound is clipped — see trade-offs).
+- **Audio stops:** Speakers go silent once the audio server suspends the stream (~5 s under stock PipeWire).
 - **Plug in headphones:** Audio switches to headphones; speakers disabled.
 
 ---
 
 ## Fixed Script
 
-`/usr/local/bin/audio_3.5_patch.py`
+`/usr/local/bin/audio_3.5_patch.py` — the same file is tracked in this directory as [`audio_3.5_patch.py`](audio_3.5_patch.py):
 
 ```python
-import os
+import glob
+import subprocess
 import time
 
-ALSA_STATUS = "/proc/asound/card0/pcm0p/sub0/status"
+
+def pinctrl(*args):
+    return subprocess.run(
+        ["pinctrl", *args], capture_output=True, text=True
+    )
+
 
 def init_gpio():
-    os.popen("pinctrl set 11 op")
-    os.popen("pinctrl set 10 ip pn")
+    pinctrl("set", "11", "op", "dl")
+    pinctrl("set", "10", "ip", "pn")
 
-def check_3_5():
-    tmp = os.popen("pinctrl 10").readline().strip("\n")
-    return tmp
 
 def is_audio_playing():
-    try:
-        with open(ALSA_STATUS) as f:
-            return "state: RUNNING" in f.read()
-    except OSError:
+    # Check every playback substream on every card, so the fix keeps
+    # working even if the analog output is not card0 (e.g. a USB audio
+    # device grabbed a lower card number at boot).
+    for path in glob.glob("/proc/asound/card*/pcm*p/sub*/status"):
+        try:
+            with open(path) as f:
+                if "state: RUNNING" in f.read():
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def headphones_inserted():
+    # pinctrl prints e.g. "10: ip    pn | hi // GPIO10 = input".
+    # Only trust the level if the pin is actually in input mode; anything
+    # unrecognized returns None so the caller fails safe (amp off).
+    out = pinctrl("10").stdout
+    if " ip " not in out:
+        return None
+    if "| hi" in out:
+        return True
+    if "| lo" in out:
         return False
+    return None
 
-def enable_speaker_gpio():
-    os.popen("pinctrl set 11 op dh")
 
-def disable_speaker_gpio():
-    os.popen("pinctrl set 11 op dl")
+def set_amp(on):
+    # "op" re-asserts the pin direction on every write, so a failed
+    # init_gpio() heals itself on the first successful amp write.
+    return pinctrl("set", "11", "op", "dh" if on else "dl").returncode == 0
 
-init_gpio()
 
-while True:
-    headphones_in = check_3_5() == "10: ip    pn | hi // GPIO10 = input"
+def main():
+    init_gpio()
+    amp_on = None  # unknown until the first confirmed write
+    while True:
+        headphones = headphones_inserted()
+        if headphones is None:
+            init_gpio()  # try to reclaim a misconfigured jack-detect pin
+            amp_on = None  # init drove GPIO11 low; cached state is stale
+        want_amp = headphones is False and is_audio_playing()
+        # Only cache the new state after pinctrl confirms the write, so a
+        # failed amp-off is retried on the next poll instead of being
+        # remembered as done.
+        if want_amp != amp_on and set_amp(want_amp):
+            amp_on = want_amp
+        time.sleep(0.5)
 
-    if headphones_in or not is_audio_playing():
-        disable_speaker_gpio()
-    else:
-        enable_speaker_gpio()
 
-    time.sleep(0.5)
+main()
 ```
 
 ---
@@ -196,8 +203,10 @@ while True:
 | Amp when idle (no audio) | **ON** (causes static) | **OFF** |
 | Amp when audio playing | ON | ON |
 | Amp when headphones in | OFF | OFF |
+| Amp when jack state unreadable | last state | **OFF** (fail safe) |
 | Poll interval | 1.0s | 0.5s |
-| Audio detection method | None | `/proc/asound/card0/pcm0p/sub0/status` |
+| Audio detection method | None | ALSA PCM status (`/proc/asound/card*/pcm*p/sub*/status`) |
+| GPIO writes | every loop | only on state change |
 
 ---
 
@@ -213,11 +222,21 @@ while True:
 ## Compatibility
 
 Tested on:
-- ClockworkPi uConsole CM5 (BCM2712, kernel 6.12.67-v8-16k+)
+- ClockworkPi uConsole CM5 (BCM2712, kernel 6.12.x)
 - `clockworkpi-audio` package v1.1
 - PipeWire audio server
 
-Should also work on CM4 (`clockworkpi-uconsole` overlay) since the GPIO assignments and ALSA card layout are the same. The ALSA status path (`/proc/asound/card0/pcm0p/sub0/status`) will remain valid as long as the RP1-Audio-Out device is card 0, which is the default in the ClockworkPi kernel.
+Should also work on CM4 (`clockworkpi-uconsole` overlay), since the GPIO assignments are the same and the ALSA playback status is discovered by globbing rather than hard-coding a card number — but CM4 is untested by the author.
+
+**Note:** `/usr/local/bin/audio_3.5_patch.py` belongs to the `clockworkpi-audio` package. If that package is upgraded or reinstalled, it may silently restore the stock script — re-apply Step 2 afterwards.
+
+---
+
+## Troubleshooting
+
+- **No speaker audio at all after applying:** check `cat /proc/asound/cards` and `ls /proc/asound/card*/pcm*p/sub*/status`. If no playback status file exists, the script can never see audio as "playing" and will keep the amp off. Revert (below) and file an issue with your `/proc/asound/cards` output.
+- **Speakers stay silent for quiet/short sounds:** expected — see trade-offs above.
+- **Static returned after an OS update:** the package likely restored the stock script — re-apply Step 2.
 
 ---
 

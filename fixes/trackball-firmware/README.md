@@ -6,7 +6,7 @@ Updates the keyboard/trackball firmware on the ClockworkPi uConsole using the of
 
 ## The Problem
 
-The uConsole's keyboard, trackball, and gamepad buttons are driven by a dedicated microcontroller (an STM32F103R-series chip) on the keyboard module, running its own firmware — independent of the OS on the CM4/CM5 mainboard.
+The uConsole's keyboard, trackball, and gamepad buttons are driven by a dedicated microcontroller (an STM32F103-compatible chip) on the keyboard module, running its own firmware — independent of the OS on the CM4/CM5 mainboard.
 
 Early stock firmware had **no scroll capability at all**: the trackball could only move the cursor, and there is no physical scroll wheel or middle button. ClockworkPi later added a scroll mode to the stock firmware:
 
@@ -14,6 +14,15 @@ Early stock firmware had **no scroll capability at all**: the trackball could on
 - Aug 2024 — trigger changed from `Fn` to `Select` (avoids Fn-layer side effects)
 
 Units that shipped before these changes (or were never updated) are stuck with the old behavior until the keyboard firmware is reflashed.
+
+---
+
+## Before you flash
+
+1. **Check whether you even need to:** hold **Select** and roll the trackball. If the page scrolls, your firmware already has the fix — stop here. Flashing carries a small but real risk; don't take it needlessly.
+2. **Have a fallback input method ready** — an external USB keyboard or an open SSH session. A failed flash can leave the built-in keyboard dead until recovered.
+3. **Unplug other USB-serial devices** (Meshtastic nodes, Arduinos, USB-serial adapters…). The flash tool hardcodes `/dev/ttyACM0`; if another device holds that name, the tool pokes the wrong device and the flash fails. Check with `ls -l /dev/serial/by-id/` — only the keyboard should be present.
+4. **Know your rollback options** — you can downgrade to older published firmware, but not recover the exact factory image. See [Reverting](#reverting) below.
 
 ---
 
@@ -49,7 +58,7 @@ sudo dfu-util -d 1EAF:0003 -a 2 -D uconsole_keyboard.ino.bin -R
 
 After flashing:
 
-1. `lsusb` should show `1eaf:0024 Leaflabs uConsole` (keyboard back in normal mode).
+1. `lsusb` should show `1eaf:0024 Leaflabs uConsole` or similar (keyboard back in normal mode; the exact text comes from the device's own descriptors, so wording can vary).
 2. Keyboard and trackball work as before.
 3. **Hold Select and roll the trackball** — the page scrolls instead of the cursor moving.
 
@@ -57,7 +66,7 @@ After flashing:
 
 ## Gotchas
 
-- **Have a fallback input method before you flash** — an external USB keyboard or an open SSH session. A failed flash can leave the built-in keyboard dead until recovered.
+- **The download is unpinned and unchecksummed.** The `wget` above pulls whatever is currently on ClockworkPi's `master` branch, and `flash.sh` runs as root. It's the vendor's own repo, but there is no integrity check — if that bothers you, read the extracted `flash.sh` (it's ~5 lines) before running it.
 - **Use the tarball, not the standalone `.bin` files.** The `Bin/` directory of the ClockworkPi repo also contains standalone `uconsole.kbd.0.X_48mhz.bin` images; the wiki explicitly warns these are *not* interchangeable with the binary bundled in the flash tool.
 - **If the keyboard is bricked** (no `/dev/ttyACM0`, `flash.sh` can't reset it): the keyboard PCB has a recovery procedure — shorting the boot pin on the module forces the DFU bootloader directly (green LED flash), after which `dfu-util -d 1EAF:0003 -a 2 -D <bin> -R` works without the reset helper. See the community firmware repos below for photos of the pin.
 - **CM5 note:** ClockworkPi's instructions mention A06/CM4; the procedure targets the keyboard module itself, which is the same part in CM5 builds. Successfully used on a CM5 uConsole (this repo's author), but not officially documented for CM5.
@@ -72,6 +81,17 @@ If you want more than the stock firmware offers (adjustable cursor acceleration 
 - [ClusterM/uconsole-keyboard](https://github.com/ClusterM/uconsole-keyboard) — from-scratch STM32 HAL firmware; configurable acceleration, cursor inertia, 10 layers
 
 Stock cursor *speed/acceleration* is fixed in firmware — if the cursor feels too slow or too fast for you, the community firmwares above are the firmware-level answer (or adjust pointer acceleration in your OS/compositor settings).
+
+---
+
+## Reverting
+
+You can't restore the *exact* image your unit shipped with — the flash tool doesn't read the old firmware off the MCU before overwriting it, and there's no way to know which build the factory installed. But downgrading is possible:
+
+- ClockworkPi publishes older firmware versions (0.1–0.4) in the repo's [`Bin/` directory](https://github.com/clockworkpi/uConsole/tree/master/Bin), flashable via the [UART flashing procedure](https://github.com/clockworkpi/uConsole/blob/master/wiki/How-to-use-keyboard-UART-port-to-flash-firmware.md) (note the tarball-vs-standalone warning above for the dfu-util path).
+- You can move to one of the community firmwares below, or back to stock, at any time — they all use the same bootloader and flash procedure.
+
+Reverting hasn't been needed in this author's use; the main behavior change to be aware of is that older builds used `Fn` (not `Select`) as the scroll trigger, or had no scroll mode at all.
 
 ---
 
